@@ -25,6 +25,7 @@ from dataclasses import dataclass
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
 import httpx
+import openai
 import wandb
 from datasets import load_dataset
 
@@ -33,6 +34,20 @@ import art.dev as dev
 from art.utils.iterate_dataset import iterate_dataset
 
 from rollout_rlm_env import R2ERLMScenario, rollout as rlm_rollout  # type: ignore[import-not-found]
+
+TRANSIENT_EXCEPTIONS = (openai.InternalServerError, openai.APIConnectionError, openai.APITimeoutError)
+
+
+async def retry_async(fn, *, retries=5, base_delay=30):
+    for attempt in range(retries + 1):
+        try:
+            return await fn()
+        except TRANSIENT_EXCEPTIONS as e:
+            if attempt == retries:
+                raise
+            delay = base_delay * (2 ** attempt)
+            print(f"  Transient error (attempt {attempt + 1}/{retries + 1}): {type(e).__name__}. Retrying in {delay}s...")
+            await asyncio.sleep(delay)
 
 
 @dataclass
@@ -212,8 +227,8 @@ async def main() -> None:
             max_exceptions=0.5,
         )
 
-        result = await backend.train(
-            model, groups, learning_rate=config.learning_rate
+        result = await retry_async(
+            lambda: backend.train(model, groups, learning_rate=config.learning_rate)
         )
 
         step_metrics = compute_step_metrics(groups)
@@ -234,12 +249,12 @@ async def main() -> None:
             "progress/cumulative_episodes": cumulative_episodes,
         })
 
-        await model.log(
+        await retry_async(lambda: model.log(
             groups,
             split="train",
             metrics={**result.metrics, **step_metrics},
             step=result.step,
-        )
+        ))
         model.merge_state({
             "step": batch.step,
             "best_reward": best_reward,

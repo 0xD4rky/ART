@@ -170,6 +170,7 @@ class R2ERLMScenario:
     ds: dict[str, Any]
     max_steps: int = 15
     reward_timeout: int = 120
+    rollout_timeout: int = 360
 
 
 def _get_docker_image(ds: dict[str, Any]) -> str:
@@ -388,7 +389,7 @@ async def rollout(
                 max_iterations=scenario.max_steps,
                 sandbox_docker_image=docker_image,
                 score_rollouts=False,
-                code_execution_timeout=120,
+                code_execution_timeout=60,
             )
 
             task_instruction = (
@@ -413,11 +414,14 @@ async def rollout(
             }
 
             client = model.openai_client()
-            state = await env.rollout(
-                input_row,
-                client,
-                model.get_inference_name(),
-                sampling_args={"temperature": 0.9, "max_completion_tokens": 4096},
+            state = await asyncio.wait_for(
+                env.rollout(
+                    input_row,
+                    client,
+                    model.get_inference_name(),
+                    sampling_args={"temperature": 0.9, "max_completion_tokens": 4096},
+                ),
+                timeout=scenario.rollout_timeout,
             )
 
             state_error = state.get("error")
@@ -448,6 +452,9 @@ async def rollout(
             traj.metrics["llm_batch_calls"] = int(root_tool_calls.get("llm_batch", 0))
             traj.metrics["is_sandbox_backend"] = backend == "sandbox"
 
+    except asyncio.TimeoutError:
+        print(f"[ROLLOUT TIMEOUT] {scenario.ds.get('instance_id', 'unknown')} exceeded {scenario.rollout_timeout}s")
+        traj.log(f"Rollout killed after {scenario.rollout_timeout}s wall-clock timeout")
     except Exception as e:
         print(f"[ROLLOUT ERROR] {e}")
         traj.log(f"RLMEnv rollout error: {e}\n{traceback.format_exc()}")
