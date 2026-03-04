@@ -481,6 +481,10 @@ class ServerlessBackend(Backend):
                 elif event.type == "training_ended":
                     if pbar is not None:
                         pbar.close()
+                    # Record provenance on the latest W&B artifact for SFT training.
+                    wandb_run = model._get_wandb_run()
+                    if wandb_run is not None:
+                        record_provenance(wandb_run, "serverless-sft")
                     return
                 elif event.type == "training_failed":
                     if pbar is not None:
